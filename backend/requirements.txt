@@ -1,0 +1,11 @@
+fastapi>=0.111
+uvicorn>=0.30
+sqlalchemy>=2.0
+pydantic>=2.7
+bcrypt>=4.1
+pyjwt>=2.8
+python-multipart>=0.0.9
+
+# Postgres driver — required for Supabase/production. Not needed for local
+# SQLite development, but harmless to install either way.
+psycopg2-binary>=2.9
