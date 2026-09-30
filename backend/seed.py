@@ -2,6 +2,10 @@
 Populates the local database with sample shipments so the tracking flow can
 be exercised end-to-end without the admin UI. Safe to re-run: it skips any
 tracking number that already exists.
+
+NOTE: Alembic migrations (alembic upgrade head — run automatically at server
+startup) are the source of truth for the schema in production. The
+create_all() below is only a dev convenience so this script works standalone.
 """
 from datetime import datetime, timedelta, timezone
 

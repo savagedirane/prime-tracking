@@ -6,6 +6,16 @@ bcrypt>=4.1
 pyjwt>=2.8
 python-multipart>=0.0.9
 
+# Schema migrations (replaces Base.metadata.create_all as the source of truth)
+alembic>=1.13
+
+# In-process TTL cache for the public tracking endpoint
+cachetools>=5.3
+
+# Per-IP rate limiting on the public tracking + login endpoints.
+# Supports an optional Redis backend via RATELIMIT_STORAGE_URI.
+slowapi>=0.1.9
+
 # Postgres driver — required for Supabase/production. Not needed for local
 # SQLite development, but harmless to install either way.
 psycopg2-binary>=2.9

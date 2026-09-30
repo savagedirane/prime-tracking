@@ -16,9 +16,24 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./prime_tracking.db")
 # SQLite needs this flag to allow use across multiple threads (FastAPI's
 # default threadpool). PostgreSQL/Supabase connections ignore it safely
 # because we only pass it when the URL is sqlite.
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+if DATABASE_URL.startswith("sqlite"):
+    engine_kwargs = {"connect_args": {"check_same_thread": False}}
+else:
+    # Pool hardening for managed Postgres (Supabase/Render):
+    # - pool_pre_ping: drop dead connections instead of raising
+    #   "server closed the connection" after an idle period.
+    # - pool_recycle: proactively rotate connections before the provider's
+    #   idle timeout kills them.
+    # - explicit pool sizing so a burst of requests queues instead of
+    #   opening unbounded connections against the pooler.
+    engine_kwargs = {
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+        "pool_size": int(os.environ.get("DB_POOL_SIZE", "5")),
+        "max_overflow": int(os.environ.get("DB_MAX_OVERFLOW", "10")),
+    }
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

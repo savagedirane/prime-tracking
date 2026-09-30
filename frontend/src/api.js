@@ -1,4 +1,7 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// Production: set VITE_API_URL to the backend's full URL (e.g. Render).
+// Dev/preview: leave unset — same-origin '/api' requests go through the
+// Vite dev proxy (vite.config.js) to the local backend, no CORS needed.
+const API_BASE = import.meta.env.VITE_API_URL || ''
 
 async function request(path, { method = 'GET', body, token } = {}) {
   const headers = { 'Content-Type': 'application/json' }
@@ -14,7 +17,7 @@ async function request(path, { method = 'GET', body, token } = {}) {
   try {
     data = await res.json()
   } catch {
-    // no JSON body (e.g. network error before response)
+    // no JSON body (e.g. 204 No Content)
   }
 
   if (!res.ok) {
@@ -32,10 +35,38 @@ export const api = {
   adminLogin: (username, password) =>
     request('/api/v1/admin/login', { method: 'POST', body: { username, password } }),
 
-  listShipments: (token) => request('/api/v1/admin/shipments', { token }),
+  // Paginated + searchable server-side list
+  listShipments: (token, { page = 1, pageSize = 25, status = '', q = '', includeDeleted = false } = {}) => {
+    const qs = new URLSearchParams()
+    qs.set('page', page)
+    qs.set('page_size', pageSize)
+    if (status) qs.set('status', status)
+    if (q) qs.set('q', q)
+    if (includeDeleted) qs.set('include_deleted', 'true')
+    return request(`/api/v1/admin/shipments?${qs.toString()}`, { token })
+  },
 
   createShipment: (payload, token) =>
     request('/api/v1/admin/shipments', { method: 'POST', body: payload, token }),
+
+  updateShipment: (trackingNumber, payload, token) =>
+    request(`/api/v1/admin/shipments/${encodeURIComponent(trackingNumber)}`, {
+      method: 'PATCH',
+      body: payload,
+      token,
+    }),
+
+  deleteShipment: (trackingNumber, token) =>
+    request(`/api/v1/admin/shipments/${encodeURIComponent(trackingNumber)}`, {
+      method: 'DELETE',
+      token,
+    }),
+
+  restoreShipment: (trackingNumber, token) =>
+    request(`/api/v1/admin/shipments/${encodeURIComponent(trackingNumber)}/restore`, {
+      method: 'POST',
+      token,
+    }),
 
   addMilestone: (trackingNumber, payload, token) =>
     request(`/api/v1/admin/shipments/${encodeURIComponent(trackingNumber)}/milestones`, {

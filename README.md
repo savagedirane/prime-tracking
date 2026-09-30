@@ -6,7 +6,10 @@ and a Leaflet dark-mode route map.
 
 This build covers the **core tracking flow end-to-end** (public lookup +
 admin create/update) with **real JWT-based admin authentication** — tested
-and working. Remaining Phase 2 items (Supabase migration, PDF waybills,
+and working. It also includes the **Phase 1 scalability hardening**: Alembic
+migrations, hot-endpoint caching + rate limiting, unguessable server-generated
+tracking numbers, hot-path indexes, admin pagination/search, and soft delete.
+Remaining Phase 2 items (Supabase migration polish, PDF waybills,
 notifications) are called out at the bottom as next steps.
 
 ## Stack
@@ -45,11 +48,16 @@ prime-tracking-app/
 
 ```bash
 cd backend
-python -m pip install fastapi uvicorn sqlalchemy pydantic bcrypt pyjwt python-multipart
+python -m pip install -r requirements.txt
 python seed.py                              # creates prime_tracking.db with 2 sample shipments
 python create_admin.py savage MyStrongPass1 # creates your admin login (pick your own username/password)
 python -m uvicorn main:app --reload --port 8000
 ```
+
+Schema migrations (Alembic) run automatically at server startup — the first
+boot on an existing pre-Alembic database adopts it in place (adds the
+`deleted_at` column + performance indexes, keeps all data). To run them
+manually instead: `python -m alembic upgrade head`.
 
 API docs live at http://localhost:8000/docs
 
@@ -77,10 +85,13 @@ App runs at http://localhost:5173
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
 | GET | `/` | No | Health check |
-| GET | `/api/v1/shipments/track/{tracking_number}` | No | Public tracking lookup |
-| POST | `/api/v1/admin/login` | No | Exchange username/password for a JWT |
-| GET | `/api/v1/admin/shipments` | Bearer JWT | List all shipments |
-| POST | `/api/v1/admin/shipments` | Bearer JWT | Create shipment |
+| GET | `/api/v1/shipments/track/{tracking_number}` | No | Public tracking lookup (TTL-cached, rate-limited 30/min per IP) |
+| POST | `/api/v1/admin/login` | No | Exchange username/password for a JWT (rate-limited 10/min per IP) |
+| GET | `/api/v1/admin/shipments` | Bearer JWT | Paginated list — `?page=1&page_size=25&status=In+Transit&q=keyword&include_deleted=true` |
+| POST | `/api/v1/admin/shipments` | Bearer JWT | Create shipment (tracking number auto-generated if omitted) |
+| PATCH | `/api/v1/admin/shipments/{tracking_number}` | Bearer JWT | Partial edit (names, dims, ETA… — status derives from milestones) |
+| DELETE | `/api/v1/admin/shipments/{tracking_number}` | Bearer JWT | Soft delete (hides shipment, keeps history) |
+| POST | `/api/v1/admin/shipments/{tracking_number}/restore` | Bearer JWT | Undo a soft delete |
 | POST | `/api/v1/admin/shipments/{tracking_number}/milestones` | Bearer JWT | Append a milestone (also updates headline status) |
 
 ## What's built and verified
@@ -93,6 +104,14 @@ App runs at http://localhost:5173
 - ✅ Leaflet dark map with origin/destination/current-location markers and route line
 - ✅ Admin dashboard: username/password sign-in, sign-out, shipment list, create-shipment form, add-milestone form
 - ✅ Production build verified clean (`npm run build`, no warnings)
+- ✅ **Alembic migrations** — versioned schema changes; the API auto-runs `alembic upgrade head` at startup, and the initial migration adopts pre-Alembic databases in place (verified against a fresh DB, a create_all-era DB, and upgrade/downgrade round-trips)
+- ✅ **Hot-path indexes** — composite `milestones(shipment_id, timestamp)` for the tracking lookup, plus `shipments.status` / `shipments.created_at` for list queries
+- ✅ **Public tracking cache + rate limits** — 60s TTL cache (invalidated on every write) absorbs repeat lookups; per-IP limits block scraping/enumeration on tracking (30/min) and credential brute force on login (10/min) — both verified returning 429 under load
+- ✅ **Unguessable tracking numbers** — server-generated `PCL` + 11 random digits + Luhn check digit (~100B combinations); provided numbers still accepted for imports, duplicates rejected with 409
+- ✅ **Admin pagination + search** — server-side `page/page_size/status/q` with a total count, wired into the dashboard UI (debounced search, status filter, prev/next)
+- ✅ **Connection pooling** — `pool_pre_ping` + `pool_recycle` + explicit pool sizing for managed Postgres
+- ✅ **Edit + soft delete + restore** — PATCH for fixing shipment details, DELETE hides a shipment from tracking while keeping its history, one click to restore
+- ✅ **Vite dev proxy** — `/api` is proxied to the backend in dev, so no CORS setup and no hardcoded localhost in the bundle
 
 ## Security notes before deploying anywhere real
 

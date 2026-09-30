@@ -15,6 +15,9 @@ services:
     sync: false
   region: oregon
   buildCommand: pip install -r requirements.txt
-  startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+  # --proxy-headers + forwarded-allow-ips: behind Render's load balancer,
+  # uvicorn must honor X-Forwarded-For or per-IP rate limits would key on the
+  # proxy IP and throttle everyone as one client.
+  startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips=*
   autoDeployTrigger: commit
   rootDir: backend

@@ -5,6 +5,9 @@ admin dashboard and receive a JWT.
 Usage:
     python create_admin.py <username> <password>
     python create_admin.py                # defaults to admin / changeme123
+
+NOTE: create_all() below is a dev convenience — Alembic migrations are the
+source of truth for the schema in production.
 """
 import sys
 

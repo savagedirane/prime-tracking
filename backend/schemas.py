@@ -46,14 +46,48 @@ class MilestoneOut(BaseModel):
     timestamp: datetime
 
 
+def _clean_tracking_number(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return v
+    v = v.strip().upper()
+    if not v:
+        return None
+    if len(v) < 6 or len(v) > 32 or not all(c.isalnum() or c == "-" for c in v):
+        raise ValueError("tracking_number must be 6-32 characters (letters, digits, dashes)")
+    return v
+
+
 class ShipmentCreate(BaseModel):
-    tracking_number: str
+    # Optional: when omitted the server generates an unguessable, Luhn-valid
+    # number (see utils.generate_tracking_number). Provided numbers are still
+    # accepted for data imports / backwards compatibility.
+    tracking_number: Optional[str] = None
     origin: str
     destination: str
     sender_name: str
     recipient_name: str
     carrier: str = "Prime Crest Logistics"
     shipping_mode: str = "Air Express"
+    weight_kg: Optional[float] = None
+    length_cm: Optional[float] = None
+    width_cm: Optional[float] = None
+    height_cm: Optional[float] = None
+    estimated_delivery: Optional[datetime] = None
+
+    @field_validator("tracking_number")
+    @classmethod
+    def tracking_number_format(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_tracking_number(v)
+
+
+class ShipmentUpdate(BaseModel):
+    """Partial update — only provided fields are applied (exclude_unset)."""
+    origin: Optional[str] = None
+    destination: Optional[str] = None
+    sender_name: Optional[str] = None
+    recipient_name: Optional[str] = None
+    carrier: Optional[str] = None
+    shipping_mode: Optional[str] = None
     weight_kg: Optional[float] = None
     length_cm: Optional[float] = None
     width_cm: Optional[float] = None
@@ -79,4 +113,14 @@ class ShipmentOut(BaseModel):
     height_cm: Optional[float] = None
     estimated_delivery: Optional[datetime] = None
     created_at: datetime
+    deleted_at: Optional[datetime] = None
     milestones: List[MilestoneOut] = []
+
+
+class ShipmentPage(BaseModel):
+    """Paginated result envelope for GET /api/v1/admin/shipments."""
+    items: List[ShipmentOut]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
