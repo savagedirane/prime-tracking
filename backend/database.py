@@ -8,6 +8,15 @@ Example production value:
     postgresql://USER:PASSWORD@HOST:5432/DBNAME
 """
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Local dev convenience: load backend/.env if present. Real environment
+# variables always win (load_dotenv never overrides them), which is what you
+# want on Render/Railway/Supabase where config comes from the dashboard.
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 

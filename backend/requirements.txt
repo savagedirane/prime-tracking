@@ -6,6 +6,9 @@ bcrypt>=4.1
 pyjwt>=2.8
 python-multipart>=0.0.9
 
+# Loads backend/.env in local development (production env vars always win)
+python-dotenv>=1.0
+
 # Schema migrations (replaces Base.metadata.create_all as the source of truth)
 alembic>=1.13
 
