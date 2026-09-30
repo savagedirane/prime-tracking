@@ -130,11 +130,15 @@ string from Project Settings → Database → Connection string → URI. Use the
 **Session pooler** string for a normal long-running backend (Render/Railway);
 use the **Transaction pooler** string if deploying somewhere serverless.
 
-**2. Install the Postgres driver:**
+**2. Install the Postgres drivers:**
 
 ```powershell
-python -m pip install psycopg2-binary
+python -m pip install -r requirements.txt
 ```
+
+(This includes `psycopg[binary]` + `psycopg2-binary`. SQLAlchemy 2.1+ uses
+psycopg v3 for plain `postgresql://` URLs automatically — no code change
+needed either way.)
 
 (Or just `python -m pip install -r requirements.txt`, which now includes it.)
 

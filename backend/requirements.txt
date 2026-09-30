@@ -16,6 +16,9 @@ cachetools>=5.3
 # Supports an optional Redis backend via RATELIMIT_STORAGE_URI.
 slowapi>=0.1.9
 
-# Postgres driver — required for Supabase/production. Not needed for local
-# SQLite development, but harmless to install either way.
+# Postgres drivers — required for Supabase/production. SQLAlchemy 2.1+
+# resolves plain postgresql:// URLs to psycopg (v3), so both drivers are
+# included: v3 for modern installs, psycopg2 for older local envs and any
+# explicit postgresql+psycopg2:// URL. Harmless to install together.
+psycopg[binary]>=3.1
 psycopg2-binary>=2.9
