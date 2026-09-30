@@ -62,6 +62,10 @@ export default function AdminDashboard() {
   const [formBusy, setFormBusy] = useState(false)
   const [notice, setNotice] = useState(null)
 
+  // From the JWT (UI affordance only — the server enforces roles for real).
+  const role = decodeTokenRole(token)
+  const isAdmin = role === 'admin'
+
   // Debounce the search box so we don't hammer the API on every keystroke.
   useEffect(() => {
     const t = setTimeout(() => setQuery(searchInput), 300)
@@ -490,20 +494,24 @@ export default function AdminDashboard() {
                 </div>
                 <div className="flex gap-2 shrink-0">
                   {isDeleted ? (
-                    <button onClick={handleRestore} disabled={formBusy}
-                      className="text-xs rounded-lg border border-emerald-400/40 text-emerald-300 px-3 py-1.5 hover:bg-emerald-400/10 transition disabled:opacity-50">
-                      Restore
-                    </button>
+                    isAdmin && (
+                      <button onClick={handleRestore} disabled={formBusy}
+                        className="text-xs rounded-lg border border-emerald-400/40 text-emerald-300 px-3 py-1.5 hover:bg-emerald-400/10 transition disabled:opacity-50">
+                        Restore
+                      </button>
+                    )
                   ) : (
                     <>
                       <button onClick={startEdit} disabled={formBusy}
                         className="text-xs rounded-lg border border-slate-700 text-slate-400 px-3 py-1.5 hover:text-slate-200 hover:border-slate-600 transition disabled:opacity-50">
                         Edit
                       </button>
-                      <button onClick={handleDelete} disabled={formBusy}
-                        className="text-xs rounded-lg border border-red-400/30 text-red-400 px-3 py-1.5 hover:bg-red-400/10 transition disabled:opacity-50">
-                        Delete
-                      </button>
+                      {isAdmin && (
+                        <button onClick={handleDelete} disabled={formBusy}
+                          className="text-xs rounded-lg border border-red-400/30 text-red-400 px-3 py-1.5 hover:bg-red-400/10 transition disabled:opacity-50">
+                          Delete
+                        </button>
+                      )}
                     </>
                   )}
                 </div>

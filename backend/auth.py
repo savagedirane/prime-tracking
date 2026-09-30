@@ -14,6 +14,8 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "dev-only-insecure-secret-change-me")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRES_MINUTES = int(os.environ.get("JWT_EXPIRES_MINUTES", "480"))  # 8 hours
 
+ROLES = ("admin", "operator")
+
 
 def hash_password(plain_password: str) -> str:
     return bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -23,10 +25,11 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(plain_password.encode("utf-8"), password_hash.encode("utf-8"))
 
 
-def create_access_token(subject: str) -> str:
+def create_access_token(subject: str, role: str = "admin") -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": subject,
+        "role": role,
         "iat": now,
         "exp": now + timedelta(minutes=JWT_EXPIRES_MINUTES),
     }

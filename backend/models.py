@@ -27,6 +27,12 @@ class Shipment(Base):
 
     origin = Column(String, nullable=False)
     destination = Column(String, nullable=False)
+    # Server-geocoded coordinates for the map (nullable until the background
+    # geocoder resolves them; see geocode.py).
+    origin_lat = Column(Float, nullable=True)
+    origin_lng = Column(Float, nullable=True)
+    dest_lat = Column(Float, nullable=True)
+    dest_lng = Column(Float, nullable=True)
 
     sender_name = Column(String, nullable=False)
     recipient_name = Column(String, nullable=False)
@@ -41,6 +47,8 @@ class Shipment(Base):
 
     estimated_delivery = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=_utcnow, index=True)
+    # Audit: which admin created this shipment (username from the JWT).
+    created_by = Column(String, nullable=True)
 
     # Soft delete: when set, the shipment is hidden from public tracking and
     # the default admin list, but the history is retained and restorable.
@@ -60,6 +68,9 @@ class AdminUser(Base):
     id = Column(String, primary_key=True, default=_uuid)
     username = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
+    # "admin" (full control, incl. delete/restore) or "operator"
+    # (day-to-day: create shipments, add milestones, edit details).
+    role = Column(String, nullable=False, default="admin", server_default="admin")
     created_at = Column(DateTime, default=_utcnow)
 
 
@@ -76,7 +87,13 @@ class Milestone(Base):
 
     status = Column(String, nullable=False)
     location = Column(String, nullable=False)
+    # Geocoded latitude/longitude for the live map (resolved asynchronously
+    # after the milestone is created).
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
     note = Column(String, nullable=True)
     timestamp = Column(DateTime, default=_utcnow, index=True)
+    # Audit: which admin recorded this milestone.
+    created_by = Column(String, nullable=True)
 
     shipment = relationship("Shipment", back_populates="milestones")

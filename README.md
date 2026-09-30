@@ -86,13 +86,14 @@ App runs at http://localhost:5173
 |---|---|---|---|
 | GET | `/` | No | Health check |
 | GET | `/api/v1/shipments/track/{tracking_number}` | No | Public tracking lookup (TTL-cached, rate-limited 30/min per IP) |
-| POST | `/api/v1/admin/login` | No | Exchange username/password for a JWT (rate-limited 10/min per IP) |
+| GET | `/api/v1/shipments/track/{tracking_number}/events` | No | **SSE live stream** — pushes a fresh snapshot on every change (milestones, edits, deletes, geocoding) |
+| POST | `/api/v1/admin/login` | No | Exchange username/password for a JWT (rate-limited 10/min per IP); token carries your role |
 | GET | `/api/v1/admin/shipments` | Bearer JWT | Paginated list — `?page=1&page_size=25&status=In+Transit&q=keyword&include_deleted=true` |
-| POST | `/api/v1/admin/shipments` | Bearer JWT | Create shipment (tracking number auto-generated if omitted) |
+| POST | `/api/v1/admin/shipments` | Bearer JWT | Create shipment (auto-generated number; audit `created_by`; fires `shipment.created` webhook) |
 | PATCH | `/api/v1/admin/shipments/{tracking_number}` | Bearer JWT | Partial edit (names, dims, ETA… — status derives from milestones) |
-| DELETE | `/api/v1/admin/shipments/{tracking_number}` | Bearer JWT | Soft delete (hides shipment, keeps history) |
-| POST | `/api/v1/admin/shipments/{tracking_number}/restore` | Bearer JWT | Undo a soft delete |
-| POST | `/api/v1/admin/shipments/{tracking_number}/milestones` | Bearer JWT | Append a milestone (also updates headline status) |
+| DELETE | `/api/v1/admin/shipments/{tracking_number}` | Bearer JWT | Soft delete — **admin role only** |
+| POST | `/api/v1/admin/shipments/{tracking_number}/restore` | Bearer JWT | Undo a soft delete — **admin role only** |
+| POST | `/api/v1/admin/shipments/{tracking_number}/milestones` | Bearer JWT | Append a milestone (updates headline status; fires `milestone.added` webhook; geocodes location) |
 
 ## What's built and verified
 
@@ -209,7 +210,8 @@ Visit your Vercel URL, track a sample shipment on the public side, then sign int
 **Railway alternative**: `backend/Procfile` is included if you'd rather use Railway instead of Render — Railway auto-detects Procfiles the same way.
 
 ## Roadmap (remaining)
-- **Email/WhatsApp webhooks** — auto-notify on milestone updates (hook into `add_milestone` in `main.py`).
+- **PDF waybills** — generate a printable waybill per shipment (hook: `create_shipment`).
 - **Refresh tokens / logout-everywhere** — current JWTs are stateless and can't be revoked before they expire; add a token blocklist or short-lived access + refresh token pair if that matters for your use case.
+- **Redis pub/sub for SSE + rate limits** — when you scale beyond one backend instance, swap `events.py` and the rate-limit storage to Redis so streams and limits are shared across workers.
 #   p r i m e - t r a c k i n g  
  

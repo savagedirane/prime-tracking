@@ -1,24 +1,32 @@
+import asyncio
 import math
 import os
+import queue as queue_mod
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from database import get_db
 import cache
+import events
+import geocode
 import models
+import notifications
 import schemas
 import auth
+from snapshots import shipment_snapshot_json
 from utils import generate_tracking_number
 
 
@@ -42,7 +50,7 @@ def run_migrations() -> None:
 
 run_migrations()
 
-app = FastAPI(title="Prime Crest Logistics Tracking API", version="1.1.0")
+app = FastAPI(title="Prime Crest Logistics Tracking API", version="2.0.0")
 
 # ---------------------------------------------------------------------------
 # Rate limiting (per client IP; memory store by default, Redis-ready)
@@ -57,6 +65,8 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 TRACK_RATELIMIT = os.environ.get("TRACK_RATELIMIT", "30/minute")
 AUTH_RATELIMIT = os.environ.get("AUTH_RATELIMIT", "10/minute")
 
+SSE_HEARTBEAT_SECONDS = float(os.environ.get("SSE_HEARTBEAT_SECONDS", "15"))
+
 # Allow the local Vite dev server (and any origin in dev). Lock this down to
 # your real frontend domain(s) before deploying to production.
 app.add_middleware(
@@ -70,12 +80,10 @@ app.add_middleware(
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def require_admin(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
-    """JWT bearer guard for admin endpoints.
-
-    Expects an `Authorization: Bearer <token>` header, issued by
-    /api/v1/admin/login. Replaces the earlier shared-secret x-admin-key.
-    """
+def require_admin(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
+    """JWT bearer guard for admin endpoints. Returns the token payload
+    (`sub` = username, `role` = admin|operator) so endpoints can audit who
+    did what."""
     if credentials is None:
         raise HTTPException(status_code=401, detail="Missing bearer token")
     try:
@@ -84,11 +92,19 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(bearer_sch
         raise HTTPException(status_code=401, detail="Session expired, please sign in again")
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
-    return payload["sub"]
+    return payload
+
+
+def require_admin_role(payload: dict = Depends(require_admin)) -> dict:
+    """Destructive operations (delete/restore) require the admin role.
+    Operators can do everything else."""
+    if payload.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required for this action")
+    return payload
 
 
 # ---------------------------------------------------------------------------
-# Shared query helpers
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 def _active_shipment(db: Session, tracking_number: str) -> models.Shipment:
@@ -104,6 +120,13 @@ def _active_shipment(db: Session, tracking_number: str) -> models.Shipment:
     return shipment
 
 
+def _publish(tracking_number: str) -> None:
+    """Push a fresh snapshot to every SSE watcher of this shipment."""
+    snapshot = shipment_snapshot_json(tracking_number)
+    if snapshot:
+        events.publish(tracking_number, snapshot)
+
+
 @app.get("/")
 def health_check():
     return {"status": "ok", "service": "prime-crest-tracking-api"}
@@ -116,7 +139,7 @@ def admin_login(request: Request, payload: schemas.AdminLoginRequest, db: Sessio
     if not user or not auth.verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
 
-    token = auth.create_access_token(subject=user.username)
+    token = auth.create_access_token(subject=user.username, role=user.role)
     return schemas.AdminTokenResponse(access_token=token, expires_in_minutes=auth.JWT_EXPIRES_MINUTES)
 
 
@@ -140,6 +163,49 @@ def track_shipment(request: Request, tracking_number: str, db: Session = Depends
     out = schemas.ShipmentOut.model_validate(shipment)
     cache.set_cached(tracking_number, out)
     return out
+
+
+@app.get("/api/v1/shipments/track/{tracking_number}/events")
+def track_shipment_events(tracking_number: str, request: Request):
+    """Server-Sent Events stream: pushes a fresh snapshot the moment the
+    shipment changes (milestone added, edited, geocoded, deleted, restored).
+
+    The public tracking page subscribes here, so customers see updates live
+    instead of hammering refresh. Keepalives every ~15s keep proxies from
+    closing idle connections; a `not_found` event ends unknown numbers.
+    """
+    tn = tracking_number.strip().upper()
+
+    async def stream():
+        q = events.subscribe(tn)
+        try:
+            snapshot = await run_in_threadpool(shipment_snapshot_json, tn)
+            if snapshot is None:
+                yield "event: not_found\ndata: {}\n\n"
+                return
+            yield f"event: shipment\ndata: {snapshot}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    # thread-safe queue: writers live in worker threads
+                    data = await asyncio.to_thread(q.get, True, SSE_HEARTBEAT_SECONDS)
+                    yield f"event: shipment\ndata: {data}\n\n"
+                except queue_mod.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            events.unsubscribe(tn, q)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # tell reverse proxies (nginx etc.) not to buffer the stream
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +282,12 @@ def list_shipments(
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_admin)],
 )
-def create_shipment(payload: schemas.ShipmentCreate, db: Session = Depends(get_db)):
+def create_shipment(
+    payload: schemas.ShipmentCreate,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
     # Server-generated unguessable numbers are the default; a client-supplied
     # number (data imports etc.) is still honored but must be unique.
     tracking_number = payload.tracking_number or generate_tracking_number(db)
@@ -229,21 +300,31 @@ def create_shipment(payload: schemas.ShipmentCreate, db: Session = Depends(get_d
 
     data = payload.model_dump()
     data["tracking_number"] = tracking_number
+    data["created_by"] = user["sub"]  # audit trail
     shipment = models.Shipment(**data)
     db.add(shipment)
     db.flush()
 
     # Seed the first milestone automatically so the timeline is never empty.
-    db.add(
-        models.Milestone(
-            shipment_id=shipment.id,
-            status="Order Registered",
-            location=payload.origin,
-            note="Shipment created and registered in the system.",
-        )
+    first_milestone = models.Milestone(
+        shipment_id=shipment.id,
+        status="Order Registered",
+        location=payload.origin,
+        note="Shipment created and registered in the system.",
+        created_by=user["sub"],
     )
+    db.add(first_milestone)
     db.commit()
     db.refresh(shipment)
+
+    # Live watchers + background work: webhook notification, then geocoding
+    # of origin/destination/milestone (which publishes coordinates when done).
+    _publish(shipment.tracking_number)
+    background_tasks.add_task(
+        notifications.notify_event, notifications.shipment_created_payload(shipment)
+    )
+    background_tasks.add_task(geocode.refresh_shipment_coordinates, shipment.id)
+    background_tasks.add_task(geocode.refresh_milestone_coordinates, first_milestone.id)
     return shipment
 
 
@@ -255,6 +336,7 @@ def create_shipment(payload: schemas.ShipmentCreate, db: Session = Depends(get_d
 def update_shipment(
     tracking_number: str,
     payload: schemas.ShipmentUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """Partial edit (recipient names, dimensions, ETA…). The headline status
@@ -266,31 +348,40 @@ def update_shipment(
     db.refresh(shipment)
 
     cache.invalidate(shipment.tracking_number)
+    _publish(shipment.tracking_number)
+
+    # Address fields may have changed — (re)resolve endpoint coordinates.
+    if any(
+        field in payload.model_dump(exclude_unset=True)
+        for field in ("origin", "destination")
+    ):
+        background_tasks.add_task(geocode.refresh_shipment_coordinates, shipment.id)
     return shipment
 
 
 @app.delete(
     "/api/v1/admin/shipments/{tracking_number}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin_role)],
 )
 def delete_shipment(tracking_number: str, db: Session = Depends(get_db)):
     """Soft delete — hides the shipment from tracking and the admin list while
-    keeping its history in the database (auditable, restorable)."""
+    keeping its history in the database (auditable, restorable). Admins only."""
     shipment = _active_shipment(db, tracking_number)
     shipment.deleted_at = datetime.now(timezone.utc)
     db.commit()
 
     cache.invalidate(shipment.tracking_number)
+    _publish(shipment.tracking_number)  # live watchers see the deletion
 
 
 @app.post(
     "/api/v1/admin/shipments/{tracking_number}/restore",
     response_model=schemas.ShipmentOut,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin_role)],
 )
 def restore_shipment(tracking_number: str, db: Session = Depends(get_db)):
-    """Undo a soft delete."""
+    """Undo a soft delete. Admins only."""
     shipment = db.scalar(
         select(models.Shipment).where(models.Shipment.tracking_number == tracking_number)
     )
@@ -304,6 +395,7 @@ def restore_shipment(tracking_number: str, db: Session = Depends(get_db)):
     db.refresh(shipment)
 
     cache.invalidate(shipment.tracking_number)
+    _publish(shipment.tracking_number)
     return shipment
 
 
@@ -315,22 +407,30 @@ def restore_shipment(tracking_number: str, db: Session = Depends(get_db)):
 def add_milestone(
     tracking_number: str,
     payload: schemas.MilestoneCreate,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     shipment = _active_shipment(db, tracking_number)
 
-    db.add(
-        models.Milestone(
-            shipment_id=shipment.id,
-            status=payload.status,
-            location=payload.location,
-            note=payload.note,
-        )
+    milestone = models.Milestone(
+        shipment_id=shipment.id,
+        status=payload.status,
+        location=payload.location,
+        note=payload.note,
+        created_by=user["sub"],  # audit trail: who scanned this parcel
     )
+    db.add(milestone)
     # The shipment's headline status always reflects its latest milestone.
     shipment.status = payload.status
     db.commit()
     db.refresh(shipment)
 
     cache.invalidate(shipment.tracking_number)
+    _publish(shipment.tracking_number)
+
+    background_tasks.add_task(
+        notifications.notify_event, notifications.milestone_payload("milestone.added", shipment, milestone)
+    )
+    background_tasks.add_task(geocode.refresh_milestone_coordinates, milestone.id)
     return shipment

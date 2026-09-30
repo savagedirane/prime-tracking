@@ -42,8 +42,11 @@ class MilestoneOut(BaseModel):
     id: int
     status: str
     location: str
+    lat: Optional[float] = None
+    lng: Optional[float] = None
     note: Optional[str] = None
     timestamp: datetime
+    created_by: Optional[str] = None
 
 
 def _clean_tracking_number(v: Optional[str]) -> Optional[str]:
@@ -103,6 +106,10 @@ class ShipmentOut(BaseModel):
     status: str
     origin: str
     destination: str
+    origin_lat: Optional[float] = None
+    origin_lng: Optional[float] = None
+    dest_lat: Optional[float] = None
+    dest_lng: Optional[float] = None
     sender_name: str
     recipient_name: str
     carrier: str
@@ -113,6 +120,7 @@ class ShipmentOut(BaseModel):
     height_cm: Optional[float] = None
     estimated_delivery: Optional[datetime] = None
     created_at: datetime
+    created_by: Optional[str] = None
     deleted_at: Optional[datetime] = None
     milestones: List[MilestoneOut] = []
 

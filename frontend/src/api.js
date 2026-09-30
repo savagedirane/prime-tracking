@@ -1,7 +1,20 @@
 // Production: set VITE_API_URL to the backend's full URL (e.g. Render).
 // Dev/preview: leave unset — same-origin '/api' requests go through the
 // Vite dev proxy (vite.config.js) to the local backend, no CORS needed.
-const API_BASE = import.meta.env.VITE_API_URL || ''
+export const API_BASE = import.meta.env.VITE_API_URL || ''
+
+// Decode the role claim from a JWT without verifying (verification happens
+// server-side; this only drives UI affordances like hiding Delete).
+export function decodeTokenRole(token) {
+  try {
+    const payload = JSON.parse(
+      atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
+    )
+    return payload.role || 'operator'
+  } catch {
+    return 'operator'
+  }
+}
 
 async function request(path, { method = 'GET', body, token } = {}) {
   const headers = { 'Content-Type': 'application/json' }
