@@ -44,23 +44,6 @@ prime-tracking-app/
 
 ## Quick start
 
-**One-command setup** (installs everything, creates `backend/.env` with a
-fresh secret, migrates the database, creates the default admin, seeds demo
-data — safe to re-run):
-
-```bash
-bash setup.sh          # macOS / Linux / Git Bash
-```
-```powershell
-powershell -ExecutionPolicy Bypass -File setup.ps1   # Windows
-```
-
-Then run the two servers (commands are printed at the end of the setup) and
-open http://localhost:5173 — login `admin / changeme123`.
-
-<details>
-<summary>Manual setup (what the script does, step by step)</summary>
-
 **1. Backend**
 
 ```bash
@@ -87,8 +70,6 @@ npm run dev
 ```
 
 App runs at http://localhost:5173
-
-</details>
 
 ## Try it
 
@@ -132,6 +113,29 @@ App runs at http://localhost:5173
 - ✅ **Connection pooling** — `pool_pre_ping` + `pool_recycle` + explicit pool sizing for managed Postgres
 - ✅ **Edit + soft delete + restore** — PATCH for fixing shipment details, DELETE hides a shipment from tracking while keeping its history, one click to restore
 - ✅ **Vite dev proxy** — `/api` is proxied to the backend in dev, so no CORS setup and no hardcoded localhost in the bundle
+
+## Map tiles & API keys
+
+Leaflet itself never needs an API key — only some **tile providers** do.
+The app defaults to CARTO's keyless dark basemap and **automatically falls
+back** to other keyless providers (OpenStreetMap) if tiles fail. If a tile
+provider in your region/network blocks or rate-limits you, either switch
+preset or drop in a free key — all via `frontend/.env`:
+
+```bash
+# keyless presets: carto-dark (default) | carto-light | osm
+VITE_MAP_PRESET=osm
+
+# or a free-tier keyed provider (maptiler.com / mapbox.com):
+VITE_MAP_PRESET=maptiler
+VITE_MAP_API_KEY=your_key_here
+
+# or any custom raster tile URL:
+VITE_MAP_TILE_URL=https://...
+```
+
+Restart `npm run dev` after changing these. Failed tiles render as a dark
+canvas — shipment markers and the route line always draw regardless.
 
 ## Security notes before deploying anywhere real
 
@@ -232,5 +236,6 @@ Visit your Vercel URL, track a sample shipment on the public side, then sign int
 - **PDF waybills** — generate a printable waybill per shipment (hook: `create_shipment`).
 - **Refresh tokens / logout-everywhere** — current JWTs are stateless and can't be revoked before they expire; add a token blocklist or short-lived access + refresh token pair if that matters for your use case.
 - **Redis pub/sub for SSE + rate limits** — when you scale beyond one backend instance, swap `events.py` and the rate-limit storage to Redis so streams and limits are shared across workers.
-#   p r i m e - t r a c k i n g  
+#   p r i m e - t r a c k i n g 
+ 
  

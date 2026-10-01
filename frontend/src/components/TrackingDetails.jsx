@@ -1,6 +1,12 @@
 import { useEffect, useRef } from 'react'
 import L from 'leaflet'
 import { STATUS_STAGES, statusColor } from '../api'
+import { getTileFallbackChain, CANVAS_BG } from '../mapTiles'
+
+// 1x1 transparent tile: failed tiles blend into the dark canvas instead of
+// showing gray boxes (so markers + route stay readable even fully offline).
+const TRANSPARENT_TILE =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
 // Legacy fallback only — the server geocodes locations into real coordinates
 // (milestones.lat/lng, shipments.origin_lat etc.). This dictionary is used
@@ -47,14 +53,34 @@ function RouteMap({ originCoords, destCoords, currentCoords, labels }) {
       attributionControl: true,
     }).setView([15, 20], 2)
 
-    L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-      {
-        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-        subdomains: 'abcd',
+    // Tiles with automatic provider failover: if the configured (or default)
+    // provider fails — blocked, rate-limited, or asking for a key we don't
+    // have — swap to the next keyless provider in the chain after a few
+    // errors. Markers/routes live in separate layers and are unaffected.
+    const chain = getTileFallbackChain()
+    let chainIndex = 0
+    let tileLayer = null
+
+    const useTileLayer = (index) => {
+      if (tileLayer) map.removeLayer(tileLayer)
+      const cfg = chain[index]
+      tileLayer = L.tileLayer(cfg.url, {
+        attribution: cfg.attribution,
+        subdomains: cfg.subdomains,
         maxZoom: 19,
-      },
-    ).addTo(map)
+        errorTileUrl: TRANSPARENT_TILE,
+      })
+      let errors = 0
+      tileLayer.on('tileerror', () => {
+        errors += 1
+        if (errors >= 3 && chainIndex < chain.length - 1) {
+          chainIndex += 1
+          useTileLayer(chainIndex)
+        }
+      })
+      tileLayer.addTo(map)
+    }
+    useTileLayer(0)
 
     mapRef.current = map
     return () => {
@@ -128,7 +154,7 @@ function RouteMap({ originCoords, destCoords, currentCoords, labels }) {
     }
   }, [originCoords, destCoords, currentCoords])
 
-  return <div ref={containerRef} className="h-72 w-full rounded-xl" />
+  return <div ref={containerRef} className="h-72 w-full rounded-xl" style={{ backgroundColor: CANVAS_BG }} />
 }
 
 function LifecycleProgress({ status }) {
