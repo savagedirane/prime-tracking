@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment / secrets
+.env
+
+# Local dev databases
+*.db
+*.sqlite3
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Alembic scratch
+alembic/versions/__pycache__/

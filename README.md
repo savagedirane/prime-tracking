@@ -6,7 +6,10 @@ and a Leaflet dark-mode route map.
 
 This build covers the **core tracking flow end-to-end** (public lookup +
 admin create/update) with **real JWT-based admin authentication** — tested
-and working. Remaining Phase 2 items (Supabase migration, PDF waybills,
+and working. It also includes the **Phase 1 scalability hardening**: Alembic
+migrations, hot-endpoint caching + rate limiting, unguessable server-generated
+tracking numbers, hot-path indexes, admin pagination/search, and soft delete.
+Remaining Phase 2 items (Supabase migration polish, PDF waybills,
 notifications) are called out at the bottom as next steps.
 
 ## Stack
@@ -41,15 +44,36 @@ prime-tracking-app/
 
 ## Quick start
 
+**One-command setup** (installs everything, creates `backend/.env` with a
+fresh secret, migrates the database, creates the default admin, seeds demo
+data — safe to re-run):
+
+```bash
+bash setup.sh          # macOS / Linux / Git Bash
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File setup.ps1   # Windows
+```
+
+Then run the two servers (commands are printed at the end of the setup) and
+open http://localhost:5173 — login `admin / changeme123`.
+
+
+
 **1. Backend**
 
 ```bash
 cd backend
-python -m pip install fastapi uvicorn sqlalchemy pydantic bcrypt pyjwt python-multipart
+python -m pip install -r requirements.txt
 python seed.py                              # creates prime_tracking.db with 2 sample shipments
 python create_admin.py savage MyStrongPass1 # creates your admin login (pick your own username/password)
 python -m uvicorn main:app --reload --port 8000
 ```
+
+Schema migrations (Alembic) run automatically at server startup — the first
+boot on an existing pre-Alembic database adopts it in place (adds the
+`deleted_at` column + performance indexes, keeps all data). To run them
+manually instead: `python -m alembic upgrade head`.
 
 API docs live at http://localhost:8000/docs
 
@@ -77,11 +101,15 @@ App runs at http://localhost:5173
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
 | GET | `/` | No | Health check |
-| GET | `/api/v1/shipments/track/{tracking_number}` | No | Public tracking lookup |
-| POST | `/api/v1/admin/login` | No | Exchange username/password for a JWT |
-| GET | `/api/v1/admin/shipments` | Bearer JWT | List all shipments |
-| POST | `/api/v1/admin/shipments` | Bearer JWT | Create shipment |
-| POST | `/api/v1/admin/shipments/{tracking_number}/milestones` | Bearer JWT | Append a milestone (also updates headline status) |
+| GET | `/api/v1/shipments/track/{tracking_number}` | No | Public tracking lookup (TTL-cached, rate-limited 30/min per IP) |
+| GET | `/api/v1/shipments/track/{tracking_number}/events` | No | **SSE live stream** — pushes a fresh snapshot on every change (milestones, edits, deletes, geocoding) |
+| POST | `/api/v1/admin/login` | No | Exchange username/password for a JWT (rate-limited 10/min per IP); token carries your role |
+| GET | `/api/v1/admin/shipments` | Bearer JWT | Paginated list — `?page=1&page_size=25&status=In+Transit&q=keyword&include_deleted=true` |
+| POST | `/api/v1/admin/shipments` | Bearer JWT | Create shipment (auto-generated number; audit `created_by`; fires `shipment.created` webhook) |
+| PATCH | `/api/v1/admin/shipments/{tracking_number}` | Bearer JWT | Partial edit (names, dims, ETA… — status derives from milestones) |
+| DELETE | `/api/v1/admin/shipments/{tracking_number}` | Bearer JWT | Soft delete — **admin role only** |
+| POST | `/api/v1/admin/shipments/{tracking_number}/restore` | Bearer JWT | Undo a soft delete — **admin role only** |
+| POST | `/api/v1/admin/shipments/{tracking_number}/milestones` | Bearer JWT | Append a milestone (updates headline status; fires `milestone.added` webhook; geocodes location) |
 
 ## What's built and verified
 
@@ -93,6 +121,37 @@ App runs at http://localhost:5173
 - ✅ Leaflet dark map with origin/destination/current-location markers and route line
 - ✅ Admin dashboard: username/password sign-in, sign-out, shipment list, create-shipment form, add-milestone form
 - ✅ Production build verified clean (`npm run build`, no warnings)
+- ✅ **Alembic migrations** — versioned schema changes; the API auto-runs `alembic upgrade head` at startup, and the initial migration adopts pre-Alembic databases in place (verified against a fresh DB, a create_all-era DB, and upgrade/downgrade round-trips)
+- ✅ **Hot-path indexes** — composite `milestones(shipment_id, timestamp)` for the tracking lookup, plus `shipments.status` / `shipments.created_at` for list queries
+- ✅ **Public tracking cache + rate limits** — 60s TTL cache (invalidated on every write) absorbs repeat lookups; per-IP limits block scraping/enumeration on tracking (30/min) and credential brute force on login (10/min) — both verified returning 429 under load
+- ✅ **Unguessable tracking numbers** — server-generated `PCL` + 11 random digits + Luhn check digit (~100B combinations); provided numbers still accepted for imports, duplicates rejected with 409
+- ✅ **Admin pagination + search** — server-side `page/page_size/status/q` with a total count, wired into the dashboard UI (debounced search, status filter, prev/next)
+- ✅ **Connection pooling** — `pool_pre_ping` + `pool_recycle` + explicit pool sizing for managed Postgres
+- ✅ **Edit + soft delete + restore** — PATCH for fixing shipment details, DELETE hides a shipment from tracking while keeping its history, one click to restore
+- ✅ **Vite dev proxy** — `/api` is proxied to the backend in dev, so no CORS setup and no hardcoded localhost in the bundle
+
+## Map tiles & API keys
+
+Leaflet itself never needs an API key — only some **tile providers** do.
+The app defaults to CARTO's keyless dark basemap and **automatically falls
+back** to other keyless providers (OpenStreetMap) if tiles fail. If a tile
+provider in your region/network blocks or rate-limits you, either switch
+preset or drop in a free key — all via `frontend/.env`:
+
+```bash
+# keyless presets: carto-dark (default) | carto-light | osm
+VITE_MAP_PRESET=osm
+
+# or a free-tier keyed provider (maptiler.com / mapbox.com):
+VITE_MAP_PRESET=maptiler
+VITE_MAP_API_KEY=your_key_here
+
+# or any custom raster tile URL:
+VITE_MAP_TILE_URL=https://...
+```
+
+Restart `npm run dev` after changing these. Failed tiles render as a dark
+canvas — shipment markers and the route line always draw regardless.
 
 ## Security notes before deploying anywhere real
 
@@ -111,11 +170,15 @@ string from Project Settings → Database → Connection string → URI. Use the
 **Session pooler** string for a normal long-running backend (Render/Railway);
 use the **Transaction pooler** string if deploying somewhere serverless.
 
-**2. Install the Postgres driver:**
+**2. Install the Postgres drivers:**
 
 ```powershell
-python -m pip install psycopg2-binary
+python -m pip install -r requirements.txt
 ```
+
+(This includes `psycopg[binary]` + `psycopg2-binary`. SQLAlchemy 2.1+ uses
+psycopg v3 for plain `postgresql://` URLs automatically — no code change
+needed either way.)
 
 (Or just `python -m pip install -r requirements.txt`, which now includes it.)
 
@@ -186,7 +249,9 @@ Visit your Vercel URL, track a sample shipment on the public side, then sign int
 **Railway alternative**: `backend/Procfile` is included if you'd rather use Railway instead of Render — Railway auto-detects Procfiles the same way.
 
 ## Roadmap (remaining)
-- **Email/WhatsApp webhooks** — auto-notify on milestone updates (hook into `add_milestone` in `main.py`).
+- **PDF waybills** — generate a printable waybill per shipment (hook: `create_shipment`).
 - **Refresh tokens / logout-everywhere** — current JWTs are stateless and can't be revoked before they expire; add a token blocklist or short-lived access + refresh token pair if that matters for your use case.
-#   p r i m e - t r a c k i n g  
+- **Redis pub/sub for SSE + rate limits** — when you scale beyond one backend instance, swap `events.py` and the rate-limit storage to Redis so streams and limits are shared across workers.
+#   p r i m e - t r a c k i n g 
+ 
  

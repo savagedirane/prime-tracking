@@ -6,6 +6,22 @@ bcrypt>=4.1
 pyjwt>=2.8
 python-multipart>=0.0.9
 
-# Postgres driver — required for Supabase/production. Not needed for local
-# SQLite development, but harmless to install either way.
+# Loads backend/.env in local development (production env vars always win)
+python-dotenv>=1.0
+
+# Schema migrations (replaces Base.metadata.create_all as the source of truth)
+alembic>=1.13
+
+# In-process TTL cache for the public tracking endpoint
+cachetools>=5.3
+
+# Per-IP rate limiting on the public tracking + login endpoints.
+# Supports an optional Redis backend via RATELIMIT_STORAGE_URI.
+slowapi>=0.1.9
+
+# Postgres drivers — required for Supabase/production. SQLAlchemy 2.1+
+# resolves plain postgresql:// URLs to psycopg (v3), so both drivers are
+# included: v3 for modern installs, psycopg2 for older local envs and any
+# explicit postgresql+psycopg2:// URL. Harmless to install together.
+psycopg[binary]>=3.1
 psycopg2-binary>=2.9

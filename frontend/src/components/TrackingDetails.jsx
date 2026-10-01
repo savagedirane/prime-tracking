@@ -1,9 +1,16 @@
 import { useEffect, useRef } from 'react'
 import L from 'leaflet'
 import { STATUS_STAGES, statusColor } from '../api'
+import { getTileFallbackChain, CANVAS_BG } from '../mapTiles'
 
-// Small built-in geocoding dictionary covering common lanes. Extend this as
-// new origin/destination cities are added to the system.
+// 1x1 transparent tile: failed tiles blend into the dark canvas instead of
+// showing gray boxes (so markers + route stay readable even fully offline).
+const TRANSPARENT_TILE =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+
+// Legacy fallback only — the server geocodes locations into real coordinates
+// (milestones.lat/lng, shipments.origin_lat etc.). This dictionary is used
+// when a location hasn't been geocoded yet (e.g. geocoding disabled).
 const CITY_COORDS = {
   'frankfurt, germany': [50.1109, 8.6821],
   'paris, france': [48.8566, 2.3522],
@@ -28,7 +35,13 @@ function geocode(place) {
   return found ? found[1] : null
 }
 
-function RouteMap({ origin, destination, currentLocation }) {
+// Prefer server-geocoded coordinates; fall back to the dictionary.
+function coordsFor(lat, lng, place) {
+  if (lat != null && lng != null) return [lat, lng]
+  return geocode(place)
+}
+
+function RouteMap({ originCoords, destCoords, currentCoords, labels }) {
   const mapRef = useRef(null)
   const containerRef = useRef(null)
 
@@ -40,14 +53,34 @@ function RouteMap({ origin, destination, currentLocation }) {
       attributionControl: true,
     }).setView([15, 20], 2)
 
-    L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-      {
-        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-        subdomains: 'abcd',
+    // Tiles with automatic provider failover: if the configured (or default)
+    // provider fails — blocked, rate-limited, or asking for a key we don't
+    // have — swap to the next keyless provider in the chain after a few
+    // errors. Markers/routes live in separate layers and are unaffected.
+    const chain = getTileFallbackChain()
+    let chainIndex = 0
+    let tileLayer = null
+
+    const useTileLayer = (index) => {
+      if (tileLayer) map.removeLayer(tileLayer)
+      const cfg = chain[index]
+      tileLayer = L.tileLayer(cfg.url, {
+        attribution: cfg.attribution,
+        subdomains: cfg.subdomains,
         maxZoom: 19,
-      },
-    ).addTo(map)
+        errorTileUrl: TRANSPARENT_TILE,
+      })
+      let errors = 0
+      tileLayer.on('tileerror', () => {
+        errors += 1
+        if (errors >= 3 && chainIndex < chain.length - 1) {
+          chainIndex += 1
+          useTileLayer(chainIndex)
+        }
+      })
+      tileLayer.addTo(map)
+    }
+    useTileLayer(0)
 
     mapRef.current = map
     return () => {
@@ -66,10 +99,6 @@ function RouteMap({ origin, destination, currentLocation }) {
       map.removeLayer(layer)
     })
 
-    const originCoords = geocode(origin)
-    const destCoords = geocode(destination)
-    const currentCoords = geocode(currentLocation) || originCoords
-
     const points = [originCoords, currentCoords, destCoords].filter(Boolean)
     if (points.length === 0) return
 
@@ -81,7 +110,7 @@ function RouteMap({ origin, destination, currentLocation }) {
         fillOpacity: 1,
         weight: 2,
       })
-        .bindTooltip(`Origin: ${origin}`)
+        .bindTooltip(`Origin: ${labels.origin}`)
         .addTo(map)
     }
 
@@ -93,7 +122,7 @@ function RouteMap({ origin, destination, currentLocation }) {
         fillOpacity: 1,
         weight: 2,
       })
-        .bindTooltip(`Destination: ${destination}`)
+        .bindTooltip(`Destination: ${labels.destination}`)
         .addTo(map)
     }
 
@@ -105,7 +134,7 @@ function RouteMap({ origin, destination, currentLocation }) {
         iconAnchor: [6, 6],
       })
       L.marker(currentCoords, { icon: pulseIcon })
-        .bindTooltip(`Current: ${currentLocation || origin}`)
+        .bindTooltip(`Current: ${labels.currentLocation || labels.origin}`)
         .addTo(map)
     }
 
@@ -123,9 +152,9 @@ function RouteMap({ origin, destination, currentLocation }) {
     } else {
       map.setView(points[0], 5)
     }
-  }, [origin, destination, currentLocation])
+  }, [originCoords, destCoords, currentCoords])
 
-  return <div ref={containerRef} className="h-72 w-full rounded-xl" />
+  return <div ref={containerRef} className="h-72 w-full rounded-xl" style={{ backgroundColor: CANVAS_BG }} />
 }
 
 function LifecycleProgress({ status }) {
@@ -164,13 +193,48 @@ function LifecycleProgress({ status }) {
   )
 }
 
-export default function TrackingDetails({ shipment }) {
+function LiveBadge({ liveMode }) {
+  if (liveMode === 'off') return null
+  const live = liveMode === 'live'
+  return (
+    <span
+      title={
+        live
+          ? 'Connected — updates appear instantly'
+          : 'Live stream unavailable — checking for updates every 30s'
+      }
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ${
+        live
+          ? 'bg-emerald-400/10 text-emerald-300 ring-emerald-400/30'
+          : 'bg-amber-400/10 text-amber-300 ring-amber-400/30'
+      }`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+      {live ? 'Live' : '30s refresh'}
+    </span>
+  )
+}
+
+export default function TrackingDetails({ shipment, liveMode = 'off' }) {
   const colors = statusColor(shipment.status)
   const latestMilestone = shipment.milestones[shipment.milestones.length - 1]
   const currentLocation = latestMilestone?.location || shipment.origin
+  const isDeleted = Boolean(shipment.deleted_at)
+
+  // Server-geocoded coordinates, with the city dictionary as fallback.
+  const originCoords = coordsFor(shipment.origin_lat, shipment.origin_lng, shipment.origin)
+  const destCoords = coordsFor(shipment.dest_lat, shipment.dest_lng, shipment.destination)
+  const currentCoords =
+    coordsFor(latestMilestone?.lat, latestMilestone?.lng, currentLocation) || originCoords
 
   return (
     <div className="space-y-6">
+      {isDeleted && (
+        <div className="rounded-xl border border-red-900 bg-red-950/40 text-red-300 px-4 py-3 text-sm">
+          This shipment has been removed from tracking. If this is a mistake, contact support.
+        </div>
+      )}
+
       {/* Header & summary card */}
       <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -180,12 +244,15 @@ export default function TrackingDetails({ shipment }) {
               {shipment.tracking_number}
             </h2>
           </div>
-          <span
-            className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm font-semibold ring-1 ${colors.bg} ${colors.text} ${colors.ring}`}
-          >
-            <span className={`h-2 w-2 rounded-full ${colors.dot}`} />
-            {shipment.status}
-          </span>
+          <div className="flex items-center gap-2">
+            <LiveBadge liveMode={liveMode} />
+            <span
+              className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm font-semibold ring-1 ${colors.bg} ${colors.text} ${colors.ring}`}
+            >
+              <span className={`h-2 w-2 rounded-full ${colors.dot}`} />
+              {shipment.status}
+            </span>
+          </div>
         </div>
 
         <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
@@ -221,9 +288,14 @@ export default function TrackingDetails({ shipment }) {
         <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
           <p className="text-sm font-semibold text-slate-300 mb-3 px-2">Live Route</p>
           <RouteMap
-            origin={shipment.origin}
-            destination={shipment.destination}
-            currentLocation={currentLocation}
+            originCoords={originCoords}
+            destCoords={destCoords}
+            currentCoords={currentCoords}
+            labels={{
+              origin: shipment.origin,
+              destination: shipment.destination,
+              currentLocation,
+            }}
           />
         </div>
 
@@ -273,6 +345,12 @@ export default function TrackingDetails({ shipment }) {
                 <p className="text-sm font-medium text-slate-200">{m.status}</p>
                 <p className="text-xs text-slate-500">
                   {m.location} &middot; {new Date(m.timestamp).toLocaleString()}
+                  {m.created_by && m.created_by !== 'seed' && (
+                    <> &middot; by {m.created_by}</>
+                  )}
+                  {m.lat != null && m.lng != null && (
+                    <> &middot; <span className="text-slate-600">📍 geolocated</span></>
+                  )}
                 </p>
                 {m.note && <p className="text-xs text-slate-400 mt-1">{m.note}</p>}
               </div>

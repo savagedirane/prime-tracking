@@ -1,12 +1,78 @@
-import { useState } from 'react'
-import { api } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { api, API_BASE } from '../api'
 import TrackingDetails from './TrackingDetails'
+
+const POLL_FALLBACK_MS = 30000
 
 export default function TrackingPortal() {
   const [input, setInput] = useState('')
   const [shipment, setShipment] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  // 'live'  = SSE stream connected (instant pushes)
+  // 'poll'  = SSE unavailable, polling every 30s
+  // 'off'   = nothing tracked yet
+  const [liveMode, setLiveMode] = useState('off')
+
+  // Live-update handles for the currently tracked shipment (refs survive
+  // re-renders, plain variables would go stale).
+  const eventSourceRef = useRef(null)
+  const pollTimerRef = useRef(null)
+
+  function stopLiveUpdates() {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+    }
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
+  }
+
+  // Subscribe to the server's SSE stream; instant pushes update the page.
+  // If the stream fails (proxy, network, old backend), fall back to polling
+  // so customers always eventually see fresh data.
+  function subscribeLiveUpdates(trackingNumber) {
+    try {
+      const es = new EventSource(
+        `${API_BASE}/api/v1/shipments/track/${encodeURIComponent(trackingNumber)}/events`
+      )
+      eventSourceRef.current = es
+      es.addEventListener('shipment', (e) => {
+        setShipment(JSON.parse(e.data))
+        setLiveMode('live')
+      })
+      es.addEventListener('not_found', () => {
+        stopLiveUpdates()
+        setLiveMode('off')
+        setError('No shipment found for that tracking number')
+        setShipment(null)
+      })
+      es.onerror = () => {
+        es.close()
+        eventSourceRef.current = null
+        startPolling(trackingNumber)
+      }
+    } catch {
+      startPolling(trackingNumber)
+    }
+  }
+
+  function startPolling(trackingNumber) {
+    if (pollTimerRef.current) return
+    setLiveMode('poll')
+    pollTimerRef.current = setInterval(async () => {
+      try {
+        setShipment(await api.trackShipment(trackingNumber))
+      } catch {
+        // shipment removed / network blip — keep showing last known state
+      }
+    }, POLL_FALLBACK_MS)
+  }
+
+  // Leave nothing running when the component unmounts.
+  useEffect(() => stopLiveUpdates, [])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -14,9 +80,13 @@ export default function TrackingPortal() {
     setLoading(true)
     setError(null)
     setShipment(null)
+    stopLiveUpdates()
+    setLiveMode('off')
+    const trackingNumber = input.trim()
     try {
-      const data = await api.trackShipment(input.trim())
+      const data = await api.trackShipment(trackingNumber)
       setShipment(data)
+      subscribeLiveUpdates(trackingNumber)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -57,7 +127,7 @@ export default function TrackingPortal() {
         </div>
       )}
 
-      {shipment && <TrackingDetails shipment={shipment} />}
+      {shipment && <TrackingDetails shipment={shipment} liveMode={liveMode} />}
 
       {!shipment && !error && (
         <p className="text-center text-slate-600 text-sm">

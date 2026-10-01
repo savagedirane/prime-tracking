@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Integer
+from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Integer, Index
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -21,12 +21,18 @@ class Shipment(Base):
     id = Column(String, primary_key=True, default=_uuid)
     tracking_number = Column(String, unique=True, index=True, nullable=False)
 
-    status = Column(String, nullable=False, default="Order Registered")
+    status = Column(String, nullable=False, default="Order Registered", index=True)
     # One of: Order Registered, Departed Origin, In Transit, Customs Clearance,
     # Out for Delivery, Delivered
 
     origin = Column(String, nullable=False)
     destination = Column(String, nullable=False)
+    # Server-geocoded coordinates for the map (nullable until the background
+    # geocoder resolves them; see geocode.py).
+    origin_lat = Column(Float, nullable=True)
+    origin_lng = Column(Float, nullable=True)
+    dest_lat = Column(Float, nullable=True)
+    dest_lng = Column(Float, nullable=True)
 
     sender_name = Column(String, nullable=False)
     recipient_name = Column(String, nullable=False)
@@ -40,7 +46,13 @@ class Shipment(Base):
     height_cm = Column(Float, nullable=True)
 
     estimated_delivery = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=_utcnow)
+    created_at = Column(DateTime, default=_utcnow, index=True)
+    # Audit: which admin created this shipment (username from the JWT).
+    created_by = Column(String, nullable=True)
+
+    # Soft delete: when set, the shipment is hidden from public tracking and
+    # the default admin list, but the history is retained and restorable.
+    deleted_at = Column(DateTime, nullable=True)
 
     milestones = relationship(
         "Milestone",
@@ -56,18 +68,32 @@ class AdminUser(Base):
     id = Column(String, primary_key=True, default=_uuid)
     username = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
+    # "admin" (full control, incl. delete/restore) or "operator"
+    # (day-to-day: create shipments, add milestones, edit details).
+    role = Column(String, nullable=False, default="admin", server_default="admin")
     created_at = Column(DateTime, default=_utcnow)
 
 
 class Milestone(Base):
     __tablename__ = "milestones"
+    __table_args__ = (
+        # The tracking lookup joins milestones by shipment and sorts by time —
+        # a composite index serves that whole query pattern.
+        Index("ix_milestones_shipment_timestamp", "shipment_id", "timestamp"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     shipment_id = Column(String, ForeignKey("shipments.id"), nullable=False)
 
     status = Column(String, nullable=False)
     location = Column(String, nullable=False)
+    # Geocoded latitude/longitude for the live map (resolved asynchronously
+    # after the milestone is created).
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
     note = Column(String, nullable=True)
-    timestamp = Column(DateTime, default=_utcnow)
+    timestamp = Column(DateTime, default=_utcnow, index=True)
+    # Audit: which admin recorded this milestone.
+    created_by = Column(String, nullable=True)
 
     shipment = relationship("Shipment", back_populates="milestones")
