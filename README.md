@@ -44,6 +44,22 @@ prime-tracking-app/
 
 ## Quick start
 
+**One-command setup** (installs everything, creates `backend/.env` with a
+fresh secret, migrates the database, creates the default admin, seeds demo
+data — safe to re-run):
+
+```bash
+bash setup.sh          # macOS / Linux / Git Bash
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File setup.ps1   # Windows
+```
+
+Then run the two servers (commands are printed at the end of the setup) and
+open http://localhost:5173 — login `admin / changeme123`.
+
+
+
 **1. Backend**
 
 ```bash
